@@ -1,7 +1,8 @@
 
-streamlit==1.41.1
-streamlit-webrtc==0.47.9
-ultralytics==8.3.40
-opencv-python==4.10.0.84
-av==13.1.0
-requests==2.32.3
+streamlit
+streamlit-webrtc
+ultralytics
+opencv-python-headless
+av
+requests
+
