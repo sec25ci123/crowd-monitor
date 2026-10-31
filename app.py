@@ -3,16 +3,14 @@ import streamlit as st
 import cv2
 import av
 import os
-import time
 import tempfile
 import threading
 import requests
+import numpy as np
 
 from ultralytics import YOLO
-from streamlit_webrtc import (
-    webrtc_streamer,
-    WebRtcMode
-)
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
+
 
 # -----------------------------
 # PAGE CONFIGURATION
@@ -25,14 +23,9 @@ st.set_page_config(
 )
 
 st.title("🚨 SentraPulse")
-st.subheader(
-    "AI-Based Crowd Density Prediction "
-    "and Safety Alert System"
-)
+st.subheader("AI-Based Crowd Density Prediction and Safety Alert System")
+st.caption("Image Upload | Video Upload | Live Camera | AI People Detection")
 
-st.caption(
-    "Video Upload | Live Camera | AI People Detection"
-)
 
 # -----------------------------
 # LOAD AI MODEL
@@ -53,13 +46,10 @@ def calculate_risk(count, area):
 
     if density < 2:
         risk = "LOW"
-
     elif density < 3:
         risk = "MODERATE"
-
     elif density < 4:
         risk = "HIGH"
-
     else:
         risk = "CRITICAL"
 
@@ -85,17 +75,12 @@ def get_alert(risk):
 def send_telegram_alert(message):
 
     try:
-        config = st.secrets.get("telegram", {})
-        token = config.get("bot_token", "")
-        chat_id = config.get("chat_id", "")
+        config = st.secrets["telegram"]
 
-        if not token or not chat_id:
-            return False
+        token = config["bot_token"]
+        chat_id = config["chat_id"]
 
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{token}/sendMessage"
-        )
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
 
         response = requests.post(
             url,
@@ -113,7 +98,7 @@ def send_telegram_alert(message):
 
 
 # -----------------------------
-# AI DETECTION
+# AI PEOPLE DETECTION
 # -----------------------------
 
 def detect_people(model, frame):
@@ -138,7 +123,27 @@ def detect_people(model, frame):
 
 
 # -----------------------------
-# SHARED LIVE CAMERA DATA
+# DISPLAY ANALYSIS
+# -----------------------------
+
+def display_results(count, density, risk):
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("People Detected", count)
+    col2.metric("Crowd Density", f"{density:.2f} persons/m²")
+    col3.metric("Risk Level", risk)
+
+    if risk == "LOW":
+        st.success(get_alert(risk))
+    elif risk == "MODERATE":
+        st.info(get_alert(risk))
+    else:
+        st.error(get_alert(risk))
+
+
+# -----------------------------
+# LIVE CAMERA STATE
 # -----------------------------
 
 class LiveState:
@@ -149,7 +154,7 @@ class LiveState:
         self.count = 0
         self.density = 0.0
         self.risk = "LOW"
-        self.previous_alert = None
+        self.previous_alert = "LOW"
 
 
 def process_live_frame(frame, model, state, area):
@@ -161,7 +166,6 @@ def process_live_frame(frame, model, state, area):
     density, risk = calculate_risk(count, area)
 
     with state.lock:
-
         state.count = count
         state.density = density
         state.risk = risk
@@ -203,14 +207,13 @@ def process_live_frame(frame, model, state, area):
 
 
 # -----------------------------
-# LIVE DASHBOARD REFRESH
+# LIVE DASHBOARD
 # -----------------------------
 
 @st.fragment(run_every="1s")
 def live_dashboard(state):
 
     with state.lock:
-
         count = state.count
         density = state.density
         risk = state.risk
@@ -219,24 +222,23 @@ def live_dashboard(state):
     col1, col2, col3 = st.columns(3)
 
     col1.metric("People Detected", count)
-
-    col2.metric(
-        "Crowd Density",
-        f"{density:.2f} /m²"
-    )
-
+    col2.metric("Crowd Density", f"{density:.2f} /m²")
     col3.metric("Risk Level", risk)
 
-    st.info(get_alert(risk))
+    if risk == "LOW":
+        st.success(get_alert(risk))
+    elif risk == "MODERATE":
+        st.info(get_alert(risk))
+    else:
+        st.error(get_alert(risk))
 
-    # Send Telegram only when risk changes
     if risk in ["HIGH", "CRITICAL"] and risk != previous:
 
         send_telegram_alert(
             f"Risk Level: {risk}\n"
             f"People: {count}\n"
             f"Density: {density:.2f} persons/m2\n"
-            f"Alert: {get_alert(risk)}"
+            f"{get_alert(risk)}"
         )
 
     with state.lock:
@@ -244,7 +246,7 @@ def live_dashboard(state):
 
 
 # -----------------------------
-# INPUT SETTINGS
+# SIDEBAR SETTINGS
 # -----------------------------
 
 st.sidebar.header("Monitoring Settings")
@@ -259,42 +261,143 @@ area = st.sidebar.number_input(
 
 st.sidebar.caption(
     "Enter the actual monitored floor area. "
-    "Accurate density requires camera calibration."
+    "Density is an estimate and requires camera calibration."
 )
+
+
+# -----------------------------
+# MONITORING MODE
+# -----------------------------
 
 mode = st.radio(
     "Choose monitoring method",
-    ["Upload Video", "Live Camera"],
+    ["Image Upload", "Video Upload", "Live Camera"],
     horizontal=True
 )
+
+
+# -----------------------------
+# IMAGE UPLOAD MODE
+# -----------------------------
+
+if mode == "Image Upload":
+
+    st.header("🖼️ Upload Crowd Image")
+
+    uploaded_image = st.file_uploader(
+        "Choose a crowd image",
+        type=["jpg", "jpeg", "png"]
+    )
+
+    if uploaded_image is not None:
+
+        image_bytes = np.frombuffer(
+            uploaded_image.getvalue(),
+            np.uint8
+        )
+
+        image = cv2.imdecode(
+            image_bytes,
+            cv2.IMREAD_COLOR
+        )
+
+        if image is None:
+            st.error("Unable to read this image.")
+        else:
+
+            st.subheader("Uploaded Image")
+
+            st.image(
+                cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+                caption="Original Crowd Image",
+                use_container_width=True
+            )
+
+            if st.button("🚀 Predict Crowd", type="primary"):
+
+                with st.spinner("AI is detecting people..."):
+
+                    model = load_model()
+
+                    count, annotated = detect_people(
+                        model,
+                        image
+                    )
+
+                    density, risk = calculate_risk(
+                        count,
+                        area
+                    )
+
+                st.subheader("📊 Crowd Prediction Results")
+
+                st.image(
+                    cv2.cvtColor(
+                        annotated,
+                        cv2.COLOR_BGR2RGB
+                    ),
+                    caption="AI People Detection",
+                    use_container_width=True
+                )
+
+                display_results(
+                    count,
+                    density,
+                    risk
+                )
+
+                st.caption(
+                    "People count represents detections in this image, "
+                    "not necessarily unique individuals."
+                )
+
+                if risk in ["HIGH", "CRITICAL"]:
+
+                    sent = send_telegram_alert(
+                        f"Image Analysis Alert\n"
+                        f"People detected: {count}\n"
+                        f"Density: {density:.2f} persons/m2\n"
+                        f"Risk: {risk}\n"
+                        f"{get_alert(risk)}"
+                    )
+
+                    if sent:
+                        st.success("Telegram alert sent.")
+                    else:
+                        st.warning(
+                            "Telegram alert not sent. "
+                            "Check your Telegram configuration."
+                        )
 
 
 # -----------------------------
 # VIDEO UPLOAD MODE
 # -----------------------------
 
-if mode == "Upload Video":
+elif mode == "Video Upload":
 
     st.header("📁 Upload Crowd Video")
 
-    uploaded = st.file_uploader(
+    uploaded_video = st.file_uploader(
         "Choose a video from your phone",
         type=["mp4", "mov", "avi", "mkv"]
     )
 
-    if uploaded is not None:
+    if uploaded_video is not None:
 
-        st.video(uploaded)
+        st.video(uploaded_video)
 
         if st.button("🚀 Analyse Crowd", type="primary"):
 
             model = load_model()
 
-            suffix = os.path.splitext(
-                uploaded.name
-            )[1] or ".mp4"
+            suffix = (
+                os.path.splitext(uploaded_video.name)[1]
+                or ".mp4"
+            )
 
             temp_path = None
+            cap = None
 
             try:
 
@@ -303,20 +406,19 @@ if mode == "Upload Video":
                     suffix=suffix
                 ) as temp:
 
-                    temp.write(uploaded.getvalue())
+                    temp.write(uploaded_video.getvalue())
                     temp_path = temp.name
 
                 cap = cv2.VideoCapture(temp_path)
+
+                if not cap.isOpened():
+                    raise ValueError("Unable to open this video.")
 
                 total = int(
                     cap.get(cv2.CAP_PROP_FRAME_COUNT)
                 )
 
-                if not cap.isOpened():
-                    st.error("Unable to open this video.")
-                    st.stop()
-
-                st.header("📊 Crowd Analysis")
+                st.subheader("📊 Crowd Analysis")
 
                 col1, col2, col3 = st.columns(3)
 
@@ -330,9 +432,8 @@ if mode == "Upload Video":
                 frame_number = 0
                 max_count = 0
                 max_density = 0
-                last_risk = None
+                last_risk = "LOW"
 
-                # Process every third frame
                 while cap.isOpened():
 
                     success, frame = cap.read()
@@ -342,6 +443,7 @@ if mode == "Upload Video":
 
                     frame_number += 1
 
+                    # Process every third frame
                     if frame_number % 3 != 0:
                         continue
 
@@ -356,10 +458,7 @@ if mode == "Upload Video":
                     )
 
                     max_count = max(max_count, count)
-                    max_density = max(
-                        max_density,
-                        density
-                    )
+                    max_density = max(max_density, density)
 
                     count_box.metric(
                         "Current People",
@@ -401,16 +500,13 @@ if mode == "Upload Video":
                             min(frame_number / total, 1.0)
                         )
 
-                cap.release()
                 progress.progress(1.0)
 
                 st.success("Video analysis completed!")
 
                 st.subheader("Maximum Observed Values")
 
-                st.write(
-                    f"Maximum people detected: {max_count}"
-                )
+                st.write(f"Maximum people detected: {max_count}")
 
                 st.write(
                     f"Maximum estimated density: "
@@ -422,6 +518,9 @@ if mode == "Upload Video":
                 st.error(f"Analysis error: {e}")
 
             finally:
+
+                if cap is not None:
+                    cap.release()
 
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -447,8 +546,7 @@ elif mode == "Live Camera":
     )
 
     st.info(
-        "Allow camera access when your browser asks "
-        "for permission."
+        "Allow camera access when your browser asks for permission."
     )
 
     model = load_model()
@@ -511,6 +609,7 @@ st.caption(
 )
 
 st.caption(
-    "Prototype only. Alerts and density estimates "
-    "must be validated before real-world safety use."
-              )
+    "Prototype only. Density thresholds are illustrative, "
+    "not certified public-safety standards."
+    )
+                     
